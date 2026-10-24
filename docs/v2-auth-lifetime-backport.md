@@ -16,11 +16,16 @@ The v2 adaptation uses an internal Result from APIClient.send to distinguish a
 server session-invalidating response from a transport error. SessionAPIClient
 and the refresh manager preserve the existing session-snapshot cleanup behavior;
 an old request must not clear a replacement session. Public responses and errors
-remain v2 types.
+remain v2 types. As in upstream, admin API `sessionMissing` responses no longer
+clear the user's stored session: admin requests use the session-free API client,
+so they cannot sign the user out.
 
 Verification on the SpaceJam owner Mac: Auth target compiles; all 245 Auth tests
 in 18 suites pass, including held refresh, dependency graph release, and subclient
-lifetimes. Full application and other platform checks are separate release gates.
+lifetimes. Follow-up regressions cover offline transport failures during token
+refresh and an authorized user request, and deinit stopping a running refresh
+loop without an explicit stop; these follow-up tests await execution. Full application and other platform checks
+are separate release gates.
 
 Consumers must pin the exact reviewed fork commit in both Bazel's SwiftPM graph
 and Xcode. Replace this pin with an official v2 release containing the fix once

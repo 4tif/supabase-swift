@@ -43,6 +43,66 @@ struct AuthClientLifetimeTests {
 
   @Test(.timeLimit(.minutes(1)))
   @MainActor
+  func deinitStopsAutoRefreshTask() async throws {
+    let released = AsyncStream<Void>.makeStream()
+    var client: AuthClient? = AuthClient(
+      configuration: .init(
+        url: clientURL, localStorage: InMemoryLocalStorage(),
+        logger: ParentReleaseLogger(released: released.continuation), autoRefreshToken: false
+      ))
+    weak var weakClient = client
+    let manager = client!.dependencies.sessionManager
+    await manager.startAutoRefresh()
+    #expect(await manager.isAutoRefreshRunning())
+
+    client = nil
+    _ = await released.stream.first(where: { @Sendable _ in true })
+
+    #expect(weakClient == nil)
+    #expect(await manager.isAutoRefreshRunning() == false)
+  }
+
+  @Test(arguments: ["token", "user"])
+  func transportFailurePreservesSessionAndDoesNotSignOut(path: String) async throws {
+    let requests = LockIsolated(0)
+    let configuration = AuthClient.Configuration(
+      url: clientURL, localStorage: InMemoryLocalStorage(), logger: nil,
+      fetch: { request in
+        #expect(request.url?.lastPathComponent == path)
+        requests.withValue { $0 += 1 }
+        throw URLError(.notConnectedToInternet)
+      }, autoRefreshToken: false
+    )
+    // Exercise the owned graph's cleanup boundary without unrelated retry delays.
+    let dependencies = Dependencies.live(
+      configuration: configuration, http: HTTPClient(fetch: configuration.fetch))
+    let original = Session.validSession
+    dependencies.sessionStorage.store(original)
+    let events = LockIsolated<[AuthChangeEvent]>([])
+    let observation = dependencies.eventEmitter.attach { event, _ in
+      events.withValue { $0.append(event) }
+    }
+    defer { observation.cancel() }
+
+    do {
+      if path == "token" {
+        _ = try await dependencies.sessionManager.refreshSession(original.refreshToken)
+      } else {
+        _ = try await dependencies.sessionAPI.authorizedExecute(
+          HTTPRequest(url: clientURL.appendingPathComponent("user"), method: .get))
+      }
+      Issue.record("Expected the transport error")
+    } catch {
+      #expect((error as? URLError)?.code == .notConnectedToInternet)
+    }
+
+    #expect(requests.value == 1)
+    #expect(dependencies.sessionStorage.get() == original)
+    #expect(!events.value.contains(.signedOut))
+  }
+
+  @Test(.timeLimit(.minutes(1)))
+  @MainActor
   func heldBackgroundRefreshFinishesAfterParentIsReleased() async throws {
     let entered = AsyncStream<Void>.makeStream()
     let parentReleased = AsyncStream<Void>.makeStream()
