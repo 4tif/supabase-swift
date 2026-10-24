@@ -7,6 +7,7 @@
 
 import ConcurrencyExtras
 import Foundation
+import Helpers
 import TestHelpers
 import Testing
 
@@ -88,23 +89,25 @@ struct AuthClientLifetimeTests {
     #expect(requests.value == 1)
   }
 
-  @Test
+  @Test(.timeLimit(.minutes(1)))
   func adminAndAdminOAuthOutliveTheParent() async throws {
-    let (admin, requests) = subClient(\.admin)
+    let (admin, requests, released) = subClient(\.admin)
+    _ = await released.first(where: { _ in true })
     try await admin.deleteUser(id: UUID())
     #expect(requests.value == 1)
-    let (oauth, oauthRequests) = subClient(\.admin.oauth)
+    let (oauth, oauthRequests, releasedOAuth) = subClient(\.admin.oauth)
+    _ = await releasedOAuth.first(where: { _ in true })
     try await oauth.deleteClient(clientId: UUID())
     #expect(oauthRequests.value == 1)
   }
 
   @Test
   func sessionAwareSubClientsKeepTheirParentAlive() async throws {
-    let (oauth, requests) = subClient(\.oauthServer)
+    let (oauth, requests, _) = subClient(\.oauthServer)
     oauth.client.dependencies.sessionStorage.store(.validSession)
     try await oauth.revokeGrant(clientId: UUID())
     #expect(requests.value == 1)
-    let (mfa, mfaRequests) = subClient(\.mfa, body: Data(#"{"id":"factor-id"}"#.utf8))
+    let (mfa, mfaRequests, _) = subClient(\.mfa, body: Data(#"{"id":"factor-id"}"#.utf8))
     mfa.client.dependencies.sessionStorage.store(.validSession)
     let response = try await mfa.unenroll(params: .init(factorId: "factor-id"))
     #expect(response.id == "factor-id")
@@ -112,12 +115,14 @@ struct AuthClientLifetimeTests {
   }
 
   private func subClient<T>(_ keyPath: KeyPath<AuthClient, T>, body: Data = Data()) -> (
-    T, LockIsolated<Int>
+    T, LockIsolated<Int>, AsyncStream<Void>
   ) {
     let requests = LockIsolated(0)
+    let released = AsyncStream<Void>.makeStream()
     let client = AuthClient(
       configuration: .init(
-        url: clientURL, localStorage: InMemoryLocalStorage(), logger: nil,
+        url: clientURL, localStorage: InMemoryLocalStorage(),
+        logger: ParentReleaseLogger(released: released.continuation),
         fetch: { request in
           requests.withValue { $0 += 1 }
           return (
@@ -127,7 +132,7 @@ struct AuthClientLifetimeTests {
           )
         }, autoRefreshToken: false
       ))
-    return (client[keyPath: keyPath], requests)
+    return (client[keyPath: keyPath], requests, released.stream)
   }
 }
 
@@ -151,4 +156,15 @@ private final class LifetimeStorage: AuthLocalStorage, @unchecked Sendable {
   }
   func retrieve(key: String) throws -> Data? { values.value[key] }
   func remove(key: String) throws { values.withValue { $0[key] = nil } }
+}
+
+/// With auto refresh disabled, this event is the client's deinit cleanup, not a timed retry.
+private struct ParentReleaseLogger: SupabaseLogger {
+  let released: AsyncStream<Void>.Continuation
+  func log(message: SupabaseLogMessage) {
+    if message.message == "stop auto refresh token" {
+      released.yield(())
+      released.finish()
+    }
+  }
 }
