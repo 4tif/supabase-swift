@@ -34,18 +34,16 @@ import HTTPTypes
 /// - ``listPasskeys(userId:)``
 /// - ``deletePasskey(userId:passkeyId:)``
 public struct AuthAdmin: Sendable {
-  let clientID: AuthClientID
-
-  var configuration: AuthClient.Configuration { Dependencies[clientID].configuration }
-  var api: APIClient { Dependencies[clientID].api }
-  var encoder: JSONEncoder { Dependencies[clientID].resolvedEncoder }
+  let configuration: AuthClient.Configuration
+  let api: APIClient
+  var encoder: JSONEncoder { configuration.resolvedEncoder }
 
   /// Contains all OAuth client administration methods.
   /// Only relevant when the OAuth 2.1 server is enabled in Supabase Auth.
   ///
   /// - Warning: This property requires `secret` key. Be careful to never expose your `secret` key in the browser.
   public var oauth: AuthAdminOAuth {
-    AuthAdminOAuth(clientID: clientID)
+    AuthAdminOAuth(configuration: configuration, api: api)
   }
 
   /// Get user by id.

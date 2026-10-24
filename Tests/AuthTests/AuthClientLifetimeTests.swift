@@ -36,7 +36,7 @@ struct AuthClientLifetimeTests {
     await client!.dependencies.sessionManager.stopAutoRefresh()
     #expect(await client!.dependencies.sessionManager.isAutoRefreshRunning() == false)
     client = nil
-    _ = await released.stream.first(where: { _ in true })
+    _ = await released.stream.first(where: { @Sendable _ in true })
     #expect(weakClient == nil)
     #expect(weakStorage == nil)
   }
@@ -45,6 +45,7 @@ struct AuthClientLifetimeTests {
   @MainActor
   func heldBackgroundRefreshFinishesAfterParentIsReleased() async throws {
     let entered = AsyncStream<Void>.makeStream()
+    let parentReleased = AsyncStream<Void>.makeStream()
     let responses = AsyncStream<Session>.makeStream()
     let writes = AsyncStream<Data>.makeStream()
     let released = AsyncStream<Void>.makeStream()
@@ -54,7 +55,8 @@ struct AuthClientLifetimeTests {
     weak var weakStorage = storage
     var client: AuthClient? = AuthClient(
       configuration: .init(
-        url: clientURL, localStorage: storage!, logger: nil,
+        url: clientURL, localStorage: storage!,
+        logger: ParentReleaseLogger(released: parentReleased.continuation),
         fetch: { request in
           #expect(request.url?.path.hasSuffix("/token") == true)
           requests.withValue { $0 += 1 }
@@ -71,20 +73,20 @@ struct AuthClientLifetimeTests {
     client!.dependencies.sessionStorage.store(.expiredSession)
     storage = nil
     await client!.dependencies.sessionManager.startAutoRefresh()
-    _ = await entered.stream.first(where: { _ in true })
+    _ = await entered.stream.first(where: { @Sendable _ in true })
     // No test task captures the parent. Only the SDK's held refresh owns its dependency values.
     client = nil
-    await Task.megaYield()
+    _ = await parentReleased.stream.first(where: { @Sendable _ in true })
     #expect(weakClient == nil)
     #expect(weakStorage != nil)
     responses.continuation.yield(.validSession)
     responses.continuation.finish()
-    let stored = await writes.stream.first { data in
+    let stored = await writes.stream.first { @Sendable data in
       (try? JSONDecoder().decode(Session.self, from: data))?.expiresIn
         == Session.validSession.expiresIn
     }
     #expect(stored != nil)
-    _ = await released.stream.first(where: { _ in true })
+    _ = await released.stream.first(where: { @Sendable _ in true })
     #expect(weakStorage == nil)
     #expect(requests.value == 1)
   }

@@ -26,11 +26,9 @@ import HTTPTypes
 /// - ``deleteClient(clientId:)``
 /// - ``regenerateClientSecret(clientId:)``
 public struct AuthAdminOAuth: Sendable {
-  let clientID: AuthClientID
-
-  var configuration: AuthClient.Configuration { Dependencies[clientID].configuration }
-  var api: APIClient { Dependencies[clientID].api }
-  var encoder: JSONEncoder { Dependencies[clientID].resolvedEncoder }
+  let configuration: AuthClient.Configuration
+  let api: APIClient
+  var encoder: JSONEncoder { configuration.resolvedEncoder }
 
   /// Lists all OAuth clients with optional pagination.
   /// Only relevant when the OAuth 2.1 server is enabled in Supabase Auth.
