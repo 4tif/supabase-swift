@@ -8,6 +8,7 @@
 import ConcurrencyExtras
 import Foundation
 import Helpers
+import HTTPTypes
 import TestHelpers
 import Testing
 
@@ -75,7 +76,7 @@ struct AuthClientLifetimeTests {
     )
     // Exercise the owned graph's cleanup boundary without unrelated retry delays.
     let dependencies = Dependencies.live(
-      configuration: configuration, http: HTTPClient(fetch: configuration.fetch))
+      configuration: configuration, http: HTTPClient(fetch: configuration.fetch, interceptors: []))
     let original = Session.validSession
     dependencies.sessionStorage.store(original)
     let events = LockIsolated<[AuthChangeEvent]>([])
