@@ -25,29 +25,15 @@ import Testing
 @Suite(.serialized, .mainSerialExecutorSerialized)
 struct SessionManagerTests {
   let http = HTTPClientMock()
-  // Unique negative clientID so this suite's process-global `Dependencies` entry can't be
-  // clobbered by another suite running concurrently (Swift Testing runs suites in parallel;
-  // `AuthClientID` is an `Int` and `AuthClient`'s own generator only ever hands out positive ids,
-  // so negatives are collision-free).
-  let clientID: AuthClientID = -1
+  let dependencies: Dependencies
 
-  var sut: SessionManager {
-    Dependencies[clientID].sessionManager
-  }
+  var sut: SessionManager { dependencies.sessionManager }
 
   init() {
-    Dependencies[clientID] = .init(
+    dependencies = .live(
       configuration: .init(
-        url: clientURL,
-        localStorage: InMemoryLocalStorage(),
-        autoRefreshToken: false
-      ),
-      http: http,
-      api: APIClient(clientID: clientID),
-      codeVerifierStorage: .mock,
-      sessionStorage: SessionStorage.live(clientID: clientID),
-      sessionManager: SessionManager.live(clientID: clientID)
-    )
+        url: clientURL, localStorage: InMemoryLocalStorage(), autoRefreshToken: false
+      ), http: http)
   }
 
   @Test
@@ -71,7 +57,7 @@ struct SessionManagerTests {
   func session_shouldReturnValidSession() async throws {
     try await withMainSerialExecutor {
       let session = Session.validSession
-      Dependencies[clientID].sessionStorage.store(session)
+      dependencies.sessionStorage.store(session)
 
       let returnedSession = try await sut.session()
       expectNoDifference(returnedSession, session)
@@ -82,7 +68,7 @@ struct SessionManagerTests {
   func session_shouldRefreshSession_whenCurrentSessionExpired() async throws {
     try await withMainSerialExecutor {
       let currentSession = Session.expiredSession
-      Dependencies[clientID].sessionStorage.store(currentSession)
+      dependencies.sessionStorage.store(currentSession)
 
       let validSession = Session.validSession
 
@@ -168,7 +154,7 @@ struct SessionManagerTests {
 
   private func collectAuthEvents() -> (events: LockIsolated<[AuthChangeEvent]>, stop: () -> Void) {
     let events = LockIsolated<[AuthChangeEvent]>([])
-    let token = Dependencies[clientID].eventEmitter.attach { event, _ in
+    let token = dependencies.eventEmitter.attach { event, _ in
       events.withValue { $0.append(event) }
     }
     return (events, { token.cancel() })
@@ -180,7 +166,7 @@ struct SessionManagerTests {
     let userB = session("B")
     let refreshedA = session("A2")
 
-    Dependencies[clientID].sessionStorage.store(userA)
+    dependencies.sessionStorage.store(userA)
     let (requestSeen, release) = await heldTokenResponse {
       .stub(refreshedA)
     }
@@ -199,7 +185,7 @@ struct SessionManagerTests {
     let result = await refresh.result
 
     expectNoDifference(
-      Dependencies[clientID].sessionStorage.get()?.refreshToken, userB.refreshToken)
+      dependencies.sessionStorage.get()?.refreshToken, userB.refreshToken)
     #expect(!events.value.contains(.tokenRefreshed))
     expectNoDifference(result.error as? AuthError, .refreshDiscarded)
   }
@@ -209,7 +195,7 @@ struct SessionManagerTests {
     let userA = session("A")
     let userB = session("B")
 
-    Dependencies[clientID].sessionStorage.store(userA)
+    dependencies.sessionStorage.store(userA)
     // `/logout` has already revoked A's refresh token by the time this answer arrives.
     let (requestSeen, release) = await heldTokenResponse {
       .stub(
@@ -232,7 +218,7 @@ struct SessionManagerTests {
     let result = await refresh.result
 
     expectNoDifference(
-      Dependencies[clientID].sessionStorage.get()?.refreshToken, userB.refreshToken)
+      dependencies.sessionStorage.get()?.refreshToken, userB.refreshToken)
     #expect(!events.value.contains(.signedOut))
     // A's caller still learns its own session is gone — the server did reject A's refresh token.
     // What must not happen is B being signed out along with it.
@@ -246,7 +232,7 @@ struct SessionManagerTests {
     let refreshedA = session("A2")
     let refreshedB = session("B2")
 
-    Dependencies[clientID].sessionStorage.store(userA)
+    dependencies.sessionStorage.store(userA)
 
     let tokensRequested = LockIsolated<[String]>([])
     let (gate, continuation) = AsyncStream<Void>.makeStream()
@@ -296,7 +282,7 @@ struct SessionManagerTests {
     let userA = session("A")
     let userB = session("B")
 
-    Dependencies[clientID].sessionStorage.store(userA)
+    dependencies.sessionStorage.store(userA)
 
     let tokensRequested = LockIsolated<[String]>([])
     let (gate, continuation) = AsyncStream<Void>.makeStream()
@@ -355,7 +341,7 @@ struct SessionManagerTests {
 
     expectNoDifference(result.refreshToken, hydrated.refreshToken)
     expectNoDifference(
-      Dependencies[clientID].sessionStorage.get()?.refreshToken, hydrated.refreshToken)
+      dependencies.sessionStorage.get()?.refreshToken, hydrated.refreshToken)
   }
 }
 

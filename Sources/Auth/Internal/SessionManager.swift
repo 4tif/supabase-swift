@@ -19,8 +19,14 @@ struct SessionManager: Sendable {
 }
 
 extension SessionManager {
-  static func live(clientID: AuthClientID) -> Self {
-    let instance = LiveSessionManager(clientID: clientID)
+  static func live(
+    configuration: AuthClient.Configuration, api: APIClient,
+    sessionStorage: SessionStorage, eventEmitter: AuthStateChangeEventEmitter,
+    logger: (any SupabaseLogger)?
+  ) -> Self {
+    let instance = LiveSessionManager(
+      configuration: configuration, api: api,
+      sessionStorage: sessionStorage, eventEmitter: eventEmitter, logger: logger)
     return Self(
       session: { try await instance.session() },
       refreshSession: { try await instance.refreshSession($0) },
@@ -35,13 +41,11 @@ extension SessionManager {
 }
 
 private actor LiveSessionManager {
-  private var configuration: AuthClient.Configuration { Dependencies[clientID].configuration }
-  private var sessionStorage: SessionStorage { Dependencies[clientID].sessionStorage }
-  private var eventEmitter: AuthStateChangeEventEmitter { Dependencies[clientID].eventEmitter }
-  // Looked up leniently, as the session manager outlives its client while the auto-refresh loop is
-  // torn down from `AuthClient.deinit`, at which point the dependencies entry is already gone.
-  private var logger: (any SupabaseLogger)? { Dependencies.instances.value[clientID]?.logger }
-  private var api: APIClient { Dependencies[clientID].api }
+  private let configuration: AuthClient.Configuration
+  private let sessionStorage: SessionStorage
+  private let eventEmitter: AuthStateChangeEventEmitter
+  private let logger: (any SupabaseLogger)?
+  private let api: APIClient
 
   // Keyed by the refresh token each task was started for: a refresh asked for a different token
   // is a different operation and must not be served another's result, while a second request for
@@ -49,10 +53,16 @@ private actor LiveSessionManager {
   private var inFlightRefreshes: [String: Task<Session, any Error>] = [:]
   private var startAutoRefreshTokenTask: Task<Void, Never>?
 
-  let clientID: AuthClientID
-
-  init(clientID: AuthClientID) {
-    self.clientID = clientID
+  init(
+    configuration: AuthClient.Configuration, api: APIClient,
+    sessionStorage: SessionStorage, eventEmitter: AuthStateChangeEventEmitter,
+    logger: (any SupabaseLogger)?
+  ) {
+    self.configuration = configuration
+    self.api = api
+    self.sessionStorage = sessionStorage
+    self.eventEmitter = eventEmitter
+    self.logger = logger
   }
 
   func session() async throws -> Session {
@@ -98,7 +108,7 @@ private actor LiveSessionManager {
             logger?.debug("Refresh task ended")
           }
 
-          let session = try await api.execute(
+          let response = try await api.send(
             HTTPRequest(
               url: configuration.url.appendingPathComponent("token"),
               method: .post,
@@ -108,19 +118,21 @@ private actor LiveSessionManager {
               body: configuration.resolvedEncoder.encode(
                 UserCredentials(refreshToken: refreshToken)
               )
-            ),
-            for: storedAtStart
+            )
           )
-          .decoded(as: Session.self, decoder: configuration.resolvedDecoder)
+          if case .failure(.sessionMissing) = response,
+            removeIfUnchanged(since: storedAtStart)
+          {
+            eventEmitter.emit(.signedOut, session: nil)
+          }
+          let session = try response.get().decoded(
+            as: Session.self, decoder: configuration.resolvedDecoder)
 
           // The rotated tokens belong to `storedAtStart`. If that session was signed out, or
           // replaced by another user signing in, while this request was in flight, committing them
           // would hand the next user the previous user's session. Drop them instead.
           //
-          // Only the success path needs this. A failure has already been through
-          // `APIClient.handleError(response:for:)`, which scopes its own cleanup to
-          // `storedAtStart` — and which clears storage itself when the cleanup is legitimate, so a
-          // check here could not tell that apart from a concurrent sign-out.
+          // The failure path above scopes its own cleanup to the session this refresh read.
           if sessionStorage.changed(since: storedAtStart) {
             logger?.debug("Refresh discarded: the session it started from is no longer stored")
             throw AuthError.refreshDiscarded
